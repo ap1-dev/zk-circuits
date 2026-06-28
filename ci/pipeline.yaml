@@ -85,7 +85,10 @@ jobs:
             - name: repo
 
           outputs:
-            - name: circuit-artifacts   # flat staging dir; sub-dirs per circuit
+            - name: circuit-artifacts
+
+          params:
+            BUILD_NAME: ((.:build-name))   # flat staging dir; sub-dirs per circuit
 
           run:
             path: bash
