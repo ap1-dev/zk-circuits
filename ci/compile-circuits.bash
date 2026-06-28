@@ -6,7 +6,7 @@ set -euo pipefail
 #   circuit-artifacts/ — output directory for per-circuit bundles
 
 REPO=repo/zk
-KEYS=$REPO/keys
+KEYS=$REPO/ptau_keys
 OUT=circuit-artifacts
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ compile_circuit() {
 
   # wasm lives one level deeper inside <name>_js/
   local wasm_js_dir=$bld/${name}_js
-  tar -czf "$bundle_dir/${dir}-artifacts.tgz" \
+  tar -czf "$bundle_dir/${dir}-artifacts-${BUILD_NAME}.tgz" \
     -C "$wasm_js_dir" "${name}.wasm" \
     -C "$(cd "$kys" && pwd)" "${name}_final.zkey" "verification_key.json"
 

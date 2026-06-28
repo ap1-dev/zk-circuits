@@ -26,43 +26,43 @@ resources:
       private_key: ((git_private_key))
 
   # ---- per-circuit artifact buckets ----------------------------------------
-  # Fixed paths, overwritten on every build. Downstream proof jobs get the
-  # latest compiled artifacts by pulling these fixed keys.
+  # Filenames embed the Concourse build number (BUILD_NAME) as the version
+  # string, e.g. f_source-artifacts-42.tgz. No S3 bucket versioning needed.
 
   - name: artifacts-f-source
     type: s3
     icon: archive
     source:
       <<: *s3_source
-      versioned_file: circuits/f_source/f_source-artifacts.tgz
+      regexp: circuits/f_source/f_source-artifacts-([0-9]+).tgz
 
   - name: artifacts-f-artifact
     type: s3
     icon: archive
     source:
       <<: *s3_source
-      versioned_file: circuits/f_artifact/f_artifact-artifacts.tgz
+      regexp: circuits/f_artifact/f_artifact-artifacts-([0-9]+).tgz
 
   - name: artifacts-f-build
     type: s3
     icon: archive
     source:
       <<: *s3_source
-      versioned_file: circuits/f_build/f_build-artifacts.tgz
+      regexp: circuits/f_build/f_build-artifacts-([0-9]+).tgz
 
   - name: artifacts-f-test
     type: s3
     icon: archive
     source:
       <<: *s3_source
-      versioned_file: circuits/f_test/f_test-artifacts.tgz
+      regexp: circuits/f_test/f_test-artifacts-([0-9]+).tgz
 
   - name: artifacts-f-deps-membership
     type: s3
     icon: archive
     source:
       <<: *s3_source
-      versioned_file: circuits/f_deps_membership/f_deps_membership-artifacts.tgz
+      regexp: circuits/f_deps_membership/f_deps_membership-artifacts-([0-9]+).tgz
 
 
 jobs:
@@ -96,20 +96,20 @@ jobs:
 
       - put: artifacts-f-source
         params:
-          file: circuit-artifacts/f_source/f_source-artifacts.tgz
+          file: circuit-artifacts/f_source/f_source-artifacts-*.tgz
 
       - put: artifacts-f-artifact
         params:
-          file: circuit-artifacts/f_artifact/f_artifact-artifacts.tgz
+          file: circuit-artifacts/f_artifact/f_artifact-artifacts-*.tgz
 
       - put: artifacts-f-build
         params:
-          file: circuit-artifacts/f_build/f_build-artifacts.tgz
+          file: circuit-artifacts/f_build/f_build-artifacts-*.tgz
 
       - put: artifacts-f-test
         params:
-          file: circuit-artifacts/f_test/f_test-artifacts.tgz
+          file: circuit-artifacts/f_test/f_test-artifacts-*.tgz
 
       - put: artifacts-f-deps-membership
         params:
-          file: circuit-artifacts/f_deps_membership/f_deps_membership-artifacts.tgz
+          file: circuit-artifacts/f_deps_membership/f_deps_membership-artifacts-*.tgz
