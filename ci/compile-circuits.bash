@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BUILD_NAME=${BUILD_NAME:-local}
+
 # Inputs (set by Concourse task environment):
 #   repo/            — git checkout (circom sources + shared ptau keys)
 #   circuit-artifacts/ — output directory for per-circuit bundles
