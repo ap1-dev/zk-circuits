@@ -1,0 +1,7 @@
+creds.yaml
+node_modules
+
+build/
+zk/**/keys/
+keys/
+proofs/

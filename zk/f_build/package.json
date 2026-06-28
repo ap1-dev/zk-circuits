@@ -1,0 +1,31 @@
+{
+  "name": "f-build-poseidon-log-exit",
+  "version": "0.1.0",
+  "scripts": {
+    "compile": "mkdir -p build keys proofs inputs && circom circuits/f_build.circom --r1cs --wasm --sym -o build",
+    "generate-input": "node scripts/generate_input.js",
+    "witness": "node build/f_build_js/generate_witness.js build/f_build_js/f_build.wasm inputs/input.json build/witness.wtns",
+    "powersoftau:start": "snarkjs powersoftau new bn128 14 keys/pot14_0000.ptau -v",
+    "powersoftau:contribute": "snarkjs powersoftau contribute keys/pot14_0000.ptau keys/pot14_0001.ptau --name='first contribution' -v",
+    "powersoftau:prepare": "snarkjs powersoftau prepare phase2 keys/pot14_0001.ptau keys/pot14_final.ptau -v",
+    "groth16:setup": "snarkjs groth16 setup build/f_build.r1cs keys/pot14_final.ptau keys/f_build_0000.zkey",
+    "groth16:contribute": "snarkjs zkey contribute keys/f_build_0000.zkey keys/f_build_final.zkey --name='f_build contribution' -v -e='more random entropy'",
+    "verification-key": "snarkjs zkey export verificationkey keys/f_build_final.zkey keys/verification_key.json",
+    "prove": "snarkjs groth16 prove keys/f_build_final.zkey build/witness.wtns proofs/proof.json proofs/public.json",
+    "verify": "snarkjs groth16 verify keys/verification_key.json proofs/public.json proofs/proof.json",
+    "full": "npm run compile && npm run generate-input && npm run witness && npm run powersoftau:start && npm run powersoftau:contribute && npm run powersoftau:prepare && npm run groth16:setup && npm run groth16:contribute && npm run verification-key && npm run prove && npm run verify"
+  },
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "circomlibjs": "^0.1.7"
+  },
+  "devDependencies": {
+    "snarkjs": "^0.7.5"
+  },
+  "overrides": {
+    "underscore": "^1.13.8",
+    "bfj": "^9.1.3",
+    "ws": "^8.21.0",
+    "elliptic": "^6.6.1"
+  }
+}

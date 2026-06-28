@@ -1,0 +1,23 @@
+FROM node:22-slim
+
+# Install Rust (required to build circom from source)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build and install circom 2.2.3
+RUN git clone --depth 1 --branch v2.2.3 \
+      https://github.com/iden3/circom.git /tmp/circom \
+    && cd /tmp/circom \
+    && cargo build --release \
+    && cp target/release/circom /usr/local/bin/circom \
+    && rm -rf /tmp/circom
+
+# Install snarkjs globally
+RUN npm install -g snarkjs@0.7.6
+
+WORKDIR /work

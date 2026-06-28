@@ -1,0 +1,31 @@
+{
+  "name": "f-source-poseidon-equality",
+  "version": "0.1.0",
+  "scripts": {
+    "compile": "mkdir -p build keys proofs && circom circuits/f_source.circom --r1cs --wasm --sym -o build",
+    "witness": "node build/f_source_js/generate_witness.js build/f_source_js/f_source.wasm inputs/input.json build/witness.wtns",
+    "generate-input": "node scripts/generate_input.js",
+    "powersoftau:start": "snarkjs powersoftau new bn128 12 keys/pot12_0000.ptau -v",
+    "powersoftau:contribute": "snarkjs powersoftau contribute keys/pot12_0000.ptau keys/pot12_0001.ptau --name='first contribution' -v",
+    "powersoftau:prepare": "snarkjs powersoftau prepare phase2 keys/pot12_0001.ptau keys/pot12_final.ptau -v",
+    "groth16:setup": "snarkjs groth16 setup build/f_source.r1cs keys/pot12_final.ptau keys/f_source_0000.zkey",
+    "groth16:contribute": "snarkjs zkey contribute keys/f_source_0000.zkey keys/f_source_final.zkey --name='f_source contribution' -v",
+    "verification-key": "snarkjs zkey export verificationkey keys/f_source_final.zkey keys/verification_key.json",
+    "prove": "snarkjs groth16 prove keys/f_source_final.zkey build/witness.wtns proofs/proof.json proofs/public.json",
+    "verify": "snarkjs groth16 verify keys/verification_key.json proofs/public.json proofs/proof.json",
+    "full": "npm run compile && npm run witness && npm run powersoftau:start && npm run powersoftau:contribute && npm run powersoftau:prepare && npm run groth16:setup && npm run groth16:contribute && npm run verification-key && npm run prove && npm run verify"
+  },
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "circomlibjs": "^0.1.7"
+  },
+  "devDependencies": {
+    "snarkjs": "^0.7.5"
+  },
+  "overrides": {
+    "underscore": "^1.13.8",
+    "bfj": "^9.1.3",
+    "ws": "^8.21.0",
+    "elliptic": "^6.6.1"
+  }
+}
