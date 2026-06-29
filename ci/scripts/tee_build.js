@@ -635,7 +635,7 @@ async function main() {
   // Chunks and hashes phase 4 (test) logs. Stage exit codes are fixed
   // at "0" for now (all tests must pass for the build to reach here).
   // ------------------------------------------------------------------
-  const testPhaseLogText = testResult.log.join("\n");
+  const testPhaseLogText = testResult.log.filter(l => l.startsWith("[TEST]")).join("\n");
   const testLogChunks    = textToFieldChunks(testPhaseLogText, MAX_LOG_CHUNKS);
 
   const testStage1ExitCode = "0";
