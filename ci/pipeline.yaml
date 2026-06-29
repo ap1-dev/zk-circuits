@@ -3,7 +3,8 @@ resource_types: []
 # ---------------------------------------------------------------------------
 # Resources
 #
-#   - `repo`  : the source git checkout (circom files + shared ptau keys).
+#   - `circuit-repo` : the source git checkout (circom files + shared ptau keys).
+#   - `src-repo`     : the application source repo built inside the TEE.
 #   - `s3` resources (one per circuit): store the compiled circuit artifacts
 #     (.wasm, final.zkey, verification_key.json) consumed by the proof job.
 # ---------------------------------------------------------------------------
@@ -17,13 +18,21 @@ s3_source: &s3_source
   disable_ssl: ((s3_disable_ssl))
 
 resources:
-  - name: repo
+  - name: circuit-repo
     type: git
     icon: github
     source:
-      uri: ((repo_uri))
-      branch: ((repo_branch))
-      private_key: ((git_private_key))
+      uri: ((circuit_repo_uri))
+      branch: ((circuit_repo_branch))
+      private_key: ((circuit_repo_private_key))
+
+  - name: src-repo
+    type: git
+    icon: github
+    source:
+      uri: ((src_repo_uri))
+      branch: ((src_repo_branch))
+      private_key: ((src_repo_private_key))
 
   # ---- per-circuit artifact buckets ----------------------------------------
   # Filenames embed the Concourse build number (BUILD_NAME) as the version
@@ -69,8 +78,8 @@ jobs:
   - name: compile-circuits
     serial: true
     plan:
-      - get: repo
-        trigger: true
+      - get: circuit-repo
+        trigger: false
 
       - task: compile-all-circuits
         config:
@@ -82,7 +91,7 @@ jobs:
               tag: ((zk_image_tag))
 
           inputs:
-            - name: repo
+            - name: circuit-repo
 
           outputs:
             - name: circuit-artifacts
@@ -93,7 +102,7 @@ jobs:
           run:
             path: bash
             args:
-              - repo/ci/compile-circuits.bash
+              - circuit-repo/ci/compile-circuits.bash
 
       # ---- push per-circuit bundles to S3 ------------------------------------
 
@@ -116,3 +125,103 @@ jobs:
       - put: artifacts-f-deps-membership
         params:
           file: circuit-artifacts/f_deps_membership/f_deps_membership-artifacts-*.tgz
+
+  # ---------------------------------------------------------------------------
+  # Job: build-and-prove
+  #
+  # Task 1 (build-tee):  builds the app inside the TEE enclave using src-repo,
+  #                      emitting a private witness (tee-build/).
+  # Task 2 (zk-proof):   consumes the witness + compiled circuit artifacts to
+  #                      generate ZK proofs.
+  # ---------------------------------------------------------------------------
+
+  - name: build-and-prove
+    serial: true
+    plan:
+      - get: circuit-repo
+        trigger: false
+
+      - get: src-repo
+        trigger: false
+
+      - get: artifacts-f-source
+        passed: [compile-circuits]
+
+      - get: artifacts-f-artifact
+        passed: [compile-circuits]
+
+      - get: artifacts-f-build
+        passed: [compile-circuits]
+
+      - get: artifacts-f-test
+        passed: [compile-circuits]
+
+      - get: artifacts-f-deps-membership
+        passed: [compile-circuits]
+
+      # ------------------------------------------------------------------
+      # Task 1: build-tee
+      # Runs tee_build.js against src-repo, writes private witness files
+      # into the `tee-build` output volume.
+      # ------------------------------------------------------------------
+      - task: build-tee
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: node
+              tag: 22-slim
+
+          inputs:
+            - name: circuit-repo
+            - name: src-repo
+
+          outputs:
+            - name: tee-build
+
+          params:
+            REPO_DIR: src-repo
+            OUT_DIR: tee-build
+            S3_OUT_DIR: tee-build/s3-output
+
+          run:
+            path: bash
+            args:
+              - -c
+              - |
+                cd circuit-repo/ci/scripts
+                npm install --prefer-offline --no-audit --no-fund
+                node tee_build.js
+
+      # ------------------------------------------------------------------
+      # Task 2: zk-proof
+      # Consumes the private witness from tee-build and the compiled
+      # circuit artifacts to generate ZK proofs.
+      # ------------------------------------------------------------------
+      - task: zk-proof
+        config:
+          platform: linux
+          image_resource:
+            type: registry-image
+            source:
+              repository: ((zk_image_repository))
+              tag: ((zk_image_tag))
+
+          inputs:
+            - name: circuit-repo
+            - name: tee-build
+            - name: artifacts-f-source
+            - name: artifacts-f-artifact
+            - name: artifacts-f-build
+            - name: artifacts-f-test
+            - name: artifacts-f-deps-membership
+
+          outputs:
+            - name: zk-proofs
+
+          run:
+            path: bash
+            args:
+              - -c
+              - echo "zk-proof task: placeholder — wire proof script here"

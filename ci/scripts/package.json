@@ -1,0 +1,8 @@
+{
+  "name": "tee-build",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "circomlibjs": "^0.1.7"
+  }
+}

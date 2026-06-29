@@ -1,0 +1,534 @@
+#!/usr/bin/env node
+"use strict";
+
+/**
+ * TEE Build: real build executed inside the TEE enclave.
+ *
+ * Mirrors vanilla_build.sh: load_deps → compute_source_root → build →
+ * run_tests → package_artifact → compute_artifact_hash.
+ *
+ * Inputs (env-overridable):
+ *   REPO_DIR    root of the source checkout (must contain app/)  (default: "repo")
+ *   OUT_DIR     output volume for build artifacts                 (default: "tee-build")
+ *   S3_OUT_DIR  directory to write the build_log for S3 upload   (default: "s3-output")
+ *   VCPKG_ROOT  optional — enables vcpkg toolchain flags to cmake
+ *
+ * Outputs:
+ *   OUT_DIR/build_log.json
+ *   OUT_DIR/final_build_summary.json
+ *   OUT_DIR/dist/demo-hasher-linux-x64.tar.gz
+ *   OUT_DIR/dist/artifact_hash.txt
+ *   OUT_DIR/dist/used_deps.json
+ *   OUT_DIR/dist/used_deps_root.txt
+ *   S3_OUT_DIR/build_log.json
+ */
+
+const crypto        = require("crypto");
+const fs            = require("fs");
+const path          = require("path");
+const { spawnSync } = require("child_process");
+const { buildPoseidon } = require("circomlibjs");
+
+const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+function randomFieldElement() {
+  let r;
+  do {
+    r = BigInt("0x" + crypto.randomBytes(32).toString("hex")) % FIELD_PRIME;
+  } while (r === 0n);
+  return r;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function H(...items) {
+  return crypto.createHash("sha256").update(items.join("|")).digest("hex");
+}
+
+function fileHash(filePath) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function merkleRoot(leaves, { sort = true } = {}) {
+  let level = sort ? [...leaves].sort() : [...leaves];
+  if (level.length === 0) return H("EMPTY");
+  while (level.length > 1) {
+    const nxt = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left  = level[i];
+      const right = i + 1 < level.length ? level[i + 1] : left;
+      nxt.push(H(left, right));
+    }
+    level = nxt;
+  }
+  return level[0];
+}
+
+function walkFiles(dir) {
+  const results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) results.push(...walkFiles(full));
+    else if (entry.isFile()) results.push(full);
+  }
+  return results;
+}
+
+// Run a subprocess and return { exitCode, output } where output combines
+// stdout + stderr in the order they appear (both piped, not interleaved live).
+function run(cmd, args, opts = {}) {
+  const result = spawnSync(cmd, args, {
+    encoding:  "utf8",
+    maxBuffer: 50 * 1024 * 1024,
+    ...opts,
+  });
+  const stdout = (result.stdout || "").trim();
+  const stderr = (result.stderr || "").trim();
+  const output = [stdout, stderr].filter(Boolean).join("\n");
+  return {
+    exitCode: result.status ?? 1,
+    output,
+    spawnError: result.error,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: load_deps  (mirrors load_deps.sh)
+// Dep install is still simulated ("In real pipeline, vcpkg install happens here").
+// Merkle root computation is real.
+// ---------------------------------------------------------------------------
+
+const USED_DEPS = [
+  { name: "catch2",        version: "3.5.2"  },
+  { name: "fmt",           version: "10.2.1" },
+  { name: "nlohmann-json", version: "3.11.3" },
+  { name: "openssl",       version: "3.2.1"  },
+];
+
+function phaseLoadDeps(distDir) {
+  const log = [
+    "[LOAD_DEPS] Starting dependency loading",
+    "[LOAD_DEPS] Reading vcpkg.json",
+    "[LOAD_DEPS] Raw log: resolving fmt, nlohmann-json, openssl, catch2",
+    "[LOAD_DEPS] In real pipeline, vcpkg install happens here",
+    "[LOAD_DEPS] Completed",
+  ];
+
+  const depsSorted   = [...USED_DEPS].sort((a, b) => a.name.localeCompare(b.name));
+  const leaves       = depsSorted.map(d => H("dep", d.name, d.version));
+  const usedDepsRoot = merkleRoot(leaves, { sort: false });
+
+  fs.writeFileSync(
+    path.join(distDir, "used_deps.json"),
+    JSON.stringify({ used_dependencies: depsSorted }, null, 2) + "\n",
+  );
+  fs.writeFileSync(path.join(distDir, "used_deps_root.txt"), usedDepsRoot + "\n");
+
+  return {
+    stage:          "LOAD_DEPS",
+    status:         "success",
+    exit_code:      0,
+    timestamp:      new Date().toISOString(),
+    used_deps:      depsSorted,
+    used_deps_root: usedDepsRoot,
+    log,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: compute_source_root  (mirrors compute_source_root.sh)
+// ---------------------------------------------------------------------------
+
+const SOURCE_EXCLUDED_DIRS = new Set([
+  "build", "dist", "logs", "vcpkg_installed", ".vcpkg", "commitments", "policy_register",
+]);
+
+async function phaseComputeSourceRoot(appRoot) {
+  if (!fs.existsSync(appRoot)) {
+    throw new Error(`tee_build: app source dir not found: ${appRoot}`);
+  }
+
+  const entries = walkFiles(appRoot)
+    .filter(p => {
+      const topDir = path.relative(appRoot, p).split(path.sep)[0];
+      return !SOURCE_EXCLUDED_DIRS.has(topDir) && path.basename(p) !== ".DS_Store";
+    })
+    .map(p => [path.relative(appRoot, p), fileHash(p)])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+  const leaves         = entries.map(([rel, fh]) => H(rel, fh));
+  const usedSourceRoot = merkleRoot(leaves, { sort: false });
+
+  const poseidon = await buildPoseidon();
+  const F        = poseidon.F;
+  const used_source_root_poseidon = BigInt("0x" + usedSourceRoot) % FIELD_PRIME;
+  const r2                        = randomFieldElement();
+  const used_source_commitment    = F.toString(poseidon([used_source_root_poseidon, r2]));
+
+  return {
+    stage:                     "COMPUTE_SOURCE_ROOT",
+    status:                    "success",
+    exit_code:                 0,
+    timestamp:                 new Date().toISOString(),
+    used_source_root:          usedSourceRoot,
+    used_source_root_poseidon: used_source_root_poseidon.toString(),
+    r2:                        r2.toString(),
+    used_source_commitment,
+    source_files_hashed:       entries.length,
+    log: [
+      "[SOURCE_ROOT] Computing Merkle root over app/ source tree",
+      `[SOURCE_ROOT] ${entries.length} files hashed`,
+      `[SOURCE_ROOT] used_source_root=${usedSourceRoot}`,
+      `[SOURCE_ROOT] used_source_root_poseidon=${used_source_root_poseidon}`,
+      `[SOURCE_ROOT] used_source_commitment=${used_source_commitment}`,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: build  (mirrors build.sh — configure then compile)
+// ---------------------------------------------------------------------------
+
+function phaseBuild(appRoot, buildDir) {
+  const ts = new Date().toISOString();
+
+  // --- Configure ---
+  const cmakeConfigArgs = [
+    "-S", appRoot,
+    "-B", buildDir,
+    "-DCMAKE_BUILD_TYPE=Release",
+  ];
+  const vcpkgLog = process.env.VCPKG_ROOT
+    ? `[CONFIGURE_BUILD] VCPKG_ROOT detected: ${process.env.VCPKG_ROOT}`
+    : "[CONFIGURE_BUILD] VCPKG_ROOT not set; expecting system packages or preconfigured toolchain";
+
+  if (process.env.VCPKG_ROOT) {
+    cmakeConfigArgs.push(
+      `-DCMAKE_TOOLCHAIN_FILE=${process.env.VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake`,
+      `-DVCPKG_MANIFEST_DIR=${appRoot}`,
+      `-DVCPKG_INSTALLED_DIR=${appRoot}/vcpkg_installed`,
+    );
+  }
+
+  const configureLog = [
+    "[CONFIGURE_BUILD] Starting CMake configure",
+    "[CONFIGURE_BUILD] Raw text: generating build files",
+    "[CONFIGURE_BUILD] Using CMAKE_BUILD_TYPE=Release",
+    vcpkgLog,
+  ];
+
+  const configureResult = run("cmake", cmakeConfigArgs);
+  configureLog.push(...configureResult.output.split("\n").filter(Boolean));
+  configureLog.push(`[CONFIGURE_BUILD] cmake exit_code=${configureResult.exitCode}`);
+
+  if (configureResult.exitCode !== 0) {
+    return {
+      stage:     "BUILD",
+      status:    "failure",
+      exit_code: configureResult.exitCode,
+      configure: {
+        stage: "CONFIGURE_BUILD", status: "failure",
+        exit_code: configureResult.exitCode, cmake_build_type: "Release",
+        timestamp: ts, log: configureLog,
+      },
+      compile: {
+        stage: "COMPILE_BUILD", status: "skipped", exit_code: null,
+        timestamp: ts, log: ["[COMPILE_BUILD] Skipped due to configure failure"],
+      },
+    };
+  }
+
+  // --- Compile ---
+  const compileLog = [
+    "[COMPILE_BUILD] Starting compile",
+    "[COMPILE_BUILD] Raw text: compiling C++ files and linking dependencies",
+  ];
+
+  const compileResult = run("cmake", ["--build", buildDir, "--config", "Release"]);
+  compileLog.push(...compileResult.output.split("\n").filter(Boolean));
+  compileLog.push(`[COMPILE_BUILD] cmake --build exit_code=${compileResult.exitCode}`);
+  if (compileResult.exitCode === 0) {
+    compileLog.push(`[COMPILE_BUILD] binary: ${path.join(buildDir, "demo-hasher")}`);
+  }
+
+  const status = compileResult.exitCode === 0 ? "success" : "failure";
+  return {
+    stage:     "BUILD",
+    status,
+    exit_code: compileResult.exitCode,
+    configure: {
+      stage: "CONFIGURE_BUILD", status: "success", exit_code: 0,
+      cmake_build_type: "Release", timestamp: ts, log: configureLog,
+    },
+    compile: {
+      stage:     "COMPILE_BUILD",
+      status,
+      exit_code: compileResult.exitCode,
+      timestamp: ts,
+      binary:    compileResult.exitCode === 0 ? path.join(buildDir, "demo-hasher") : null,
+      log:       compileLog,
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: run_tests  (mirrors run_tests.sh — ctest)
+// ---------------------------------------------------------------------------
+
+function phaseRunTests(buildDir) {
+  const log = [
+    "[TEST] Starting tests",
+    "[TEST] Raw text: running CTest",
+  ];
+
+  const result = run("ctest", ["--test-dir", buildDir, "--output-on-failure"]);
+  log.push(...result.output.split("\n").filter(Boolean));
+  log.push(`[TEST] ctest exit_code=${result.exitCode}`);
+
+  // Parse CTest summary: "X% tests passed, Y tests failed out of Z"
+  const m = result.output.match(/(\d+)% tests passed,\s+(\d+) tests? failed out of (\d+)/);
+  let tests_expected = 0, tests_passed = 0, tests_failed = 0;
+  if (m) {
+    tests_expected = parseInt(m[3], 10);
+    tests_failed   = parseInt(m[2], 10);
+    tests_passed   = tests_expected - tests_failed;
+  }
+  log.push(`[TEST] ${tests_passed}/${tests_expected} tests passed`);
+
+  return {
+    stage:          "TEST",
+    status:         result.exitCode === 0 ? "success" : "failure",
+    exit_code:      result.exitCode,
+    timestamp:      new Date().toISOString(),
+    tests_expected,
+    tests_passed,
+    tests_failed,
+    log,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: package_artifact  (mirrors package_artifact.sh)
+// ---------------------------------------------------------------------------
+
+function findGNUTar() {
+  for (const t of ["tar", "gtar"]) {
+    const r = run(t, ["--version"]);
+    if (r.exitCode === 0 && r.output.includes("GNU")) return t;
+  }
+  return "tar";
+}
+
+function phasePackageArtifact(buildDir, distDir, usedDepsRoot) {
+  const log = [
+    "[PACKAGE_ARTIFACT] Starting package",
+    "[PACKAGE_ARTIFACT] Raw text: copying binary and metadata",
+  ];
+
+  // Locate binary — single-config (Linux) or multi-config (Windows/MSVC)
+  let binaryPath = path.join(buildDir, "demo-hasher");
+  if (!fs.existsSync(binaryPath)) {
+    const alt = path.join(buildDir, "Release", "demo-hasher");
+    if (fs.existsSync(alt)) {
+      binaryPath = alt;
+    } else {
+      throw new Error(`[PACKAGE_ARTIFACT] binary not found at ${binaryPath} or ${alt}`);
+    }
+  }
+
+  const pkgRoot      = path.join(distDir, "package-root");
+  const artifactName = "demo-hasher-linux-x64.tar.gz";
+  const artifactPath = path.join(distDir, artifactName);
+
+  fs.rmSync(pkgRoot, { recursive: true, force: true });
+  fs.mkdirSync(path.join(pkgRoot, "bin"), { recursive: true });
+  fs.copyFileSync(binaryPath, path.join(pkgRoot, "bin", "demo-hasher"));
+
+  const manifest = {
+    name:         "demo-hasher",
+    version:      "0.1.0",
+    binary:       "bin/demo-hasher",
+    build_type:   "Release",
+    dependencies: ["fmt", "nlohmann-json", "openssl"],
+  };
+  fs.writeFileSync(path.join(pkgRoot, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+  // Use GNU tar flags for reproducible output; fall back to BSD tar for local dev
+  const tarBin  = findGNUTar();
+  const isGNU   = run(tarBin, ["--version"]).output.includes("GNU");
+  const tarArgs = isGNU
+    ? ["--sort=name", "--mtime=UTC 2024-01-01", "--owner=0", "--group=0",
+       "--numeric-owner", "-czf", artifactPath, "-C", pkgRoot, "."]
+    : ["-czf", artifactPath, "-C", pkgRoot, "."];
+
+  const tarResult = run(tarBin, tarArgs);
+  if (tarResult.exitCode !== 0) {
+    throw new Error(`[PACKAGE_ARTIFACT] tar failed (exit ${tarResult.exitCode}): ${tarResult.output}`);
+  }
+
+  const artifactHash = fileHash(artifactPath);
+  fs.writeFileSync(path.join(distDir, "artifact_hash.txt"), artifactHash + "\n");
+  log.push(`[PACKAGE_ARTIFACT] artifact_hash=${artifactHash}`);
+
+  return {
+    stage:         "PACKAGE_ARTIFACT",
+    status:        "success",
+    exit_code:     0,
+    timestamp:     new Date().toISOString(),
+    artifact_path: `dist/${artifactName}`,
+    artifact_hash: artifactHash,
+    manifest,
+    dependency_measurement: { used_deps_root: usedDepsRoot },
+    log,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: compute_artifact_hash  (mirrors compute_artifact_hash.sh)
+// ---------------------------------------------------------------------------
+
+async function phaseComputeArtifactHash(artifactHash) {
+  const poseidon = await buildPoseidon();
+  const F        = poseidon.F;
+
+  const used_artifact_root_poseidon = BigInt("0x" + artifactHash) % FIELD_PRIME;
+  const r2                          = randomFieldElement();
+  const used_artifact_commitment    = F.toString(poseidon([used_artifact_root_poseidon, r2]));
+
+  return {
+    stage:                       "COMPUTE_ARTIFACT_HASH",
+    status:                      "success",
+    exit_code:                   0,
+    timestamp:                   new Date().toISOString(),
+    used_artifact_root:          artifactHash,
+    used_artifact_root_poseidon: used_artifact_root_poseidon.toString(),
+    r2:                          r2.toString(),
+    used_artifact_commitment,
+    log: [
+      "[ARTIFACT_HASH] Computing Poseidon commitment over artifact hash",
+      `[ARTIFACT_HASH] used_artifact_root=${artifactHash}`,
+      `[ARTIFACT_HASH] used_artifact_root_poseidon=${used_artifact_root_poseidon}`,
+      `[ARTIFACT_HASH] r2=${r2}`,
+      `[ARTIFACT_HASH] used_artifact_commitment=${used_artifact_commitment}`,
+    ],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+async function main() {
+  const repoDir  = process.env.REPO_DIR   || "repo";
+  const outDir   = process.env.OUT_DIR    || "tee-build";
+  const s3OutDir = process.env.S3_OUT_DIR || "s3-output";
+
+  // appRoot = <src-repo>/app — mirrors APP_ROOT in common.sh
+  const appRoot  = path.resolve(repoDir, "app");
+  // Build and dist dirs live inside the output volume (src-repo input is read-only)
+  const buildDir = path.resolve(outDir, "build");
+  const distDir  = path.resolve(outDir, "dist");
+
+  for (const d of [outDir, s3OutDir, buildDir, distDir]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+
+  console.log("[TEE_BUILD] Starting build sequence");
+  console.log(`[TEE_BUILD] app root:  ${appRoot}`);
+  console.log(`[TEE_BUILD] build dir: ${buildDir}`);
+  console.log(`[TEE_BUILD] dist dir:  ${distDir}`);
+
+  const depsResult = phaseLoadDeps(distDir);
+  console.log(`[TEE_BUILD] load_deps: ${depsResult.status}`);
+
+  const sourceResult = await phaseComputeSourceRoot(appRoot);
+  console.log(`[TEE_BUILD] compute_source_root: ${sourceResult.status}`);
+  console.log(`[TEE_BUILD] used_source_root=${sourceResult.used_source_root}`);
+  console.log(`[TEE_BUILD] used_source_root_poseidon=${sourceResult.used_source_root_poseidon}`);
+  console.log(`[TEE_BUILD] r2=${sourceResult.r2}`);
+  console.log(`[TEE_BUILD] used_source_commitment=${sourceResult.used_source_commitment}`);
+
+  const buildResult = phaseBuild(appRoot, buildDir);
+  console.log(`[TEE_BUILD] build: ${buildResult.status}`);
+  if (buildResult.status !== "success") {
+    console.error("[TEE_BUILD] Build failed — aborting");
+    process.exit(1);
+  }
+
+  const testResult = phaseRunTests(buildDir);
+  console.log(`[TEE_BUILD] run_tests: ${testResult.status} (${testResult.tests_passed}/${testResult.tests_expected} passed)`);
+  if (testResult.status !== "success") {
+    console.error("[TEE_BUILD] Tests failed — aborting");
+    process.exit(1);
+  }
+
+  const pkgResult = phasePackageArtifact(buildDir, distDir, depsResult.used_deps_root);
+  console.log(`[TEE_BUILD] package_artifact: ${pkgResult.status}`);
+  console.log(`[TEE_BUILD] artifact_hash=${pkgResult.artifact_hash}`);
+
+  const artifactHashResult = await phaseComputeArtifactHash(pkgResult.artifact_hash);
+  console.log(`[TEE_BUILD] compute_artifact_hash: ${artifactHashResult.status}`);
+  console.log(`[TEE_BUILD] used_artifact_root=${artifactHashResult.used_artifact_root}`);
+  console.log(`[TEE_BUILD] used_artifact_root_poseidon=${artifactHashResult.used_artifact_root_poseidon}`);
+  console.log(`[TEE_BUILD] r2=${artifactHashResult.r2}`);
+  console.log(`[TEE_BUILD] used_artifact_commitment=${artifactHashResult.used_artifact_commitment}`);
+
+  const buildLog = {
+    build_id:     "tee-build-001",
+    app:          "demo-hasher",
+    version:      "0.1.0",
+    stages: {
+      load_deps:             depsResult,
+      compute_source_root:   sourceResult,
+      build:                 buildResult,
+      test:                  testResult,
+      package_artifact:      pkgResult,
+      compute_artifact_hash: artifactHashResult,
+    },
+    final_status: "success",
+  };
+
+  const summary = {
+    build_id: buildLog.build_id,
+    app:      buildLog.app,
+    version:  buildLog.version,
+    stages: {
+      load_deps:             { status: depsResult.status,            exit_code: depsResult.exit_code },
+      configure_build:       { status: buildResult.configure.status, exit_code: buildResult.configure.exit_code },
+      compile_build:         { status: buildResult.compile.status,   exit_code: buildResult.compile.exit_code },
+      test: {
+        status:       testResult.status,
+        exit_code:    testResult.exit_code,
+        tests_passed: testResult.tests_passed,
+        tests_failed: testResult.tests_failed,
+      },
+      package_artifact:      { status: pkgResult.status,             exit_code: pkgResult.exit_code },
+      compute_artifact_hash: { status: artifactHashResult.status,    exit_code: artifactHashResult.exit_code },
+    },
+    dependency_measurement: {
+      used_deps_root: depsResult.used_deps_root,
+    },
+    artifact: {
+      path:          pkgResult.artifact_path,
+      artifact_hash: pkgResult.artifact_hash,
+    },
+    source: {
+      used_source_root: sourceResult.used_source_root,
+    },
+    artifact_measurement: {
+      used_artifact_root: artifactHashResult.used_artifact_root,
+    },
+  };
+
+  fs.writeFileSync(path.join(outDir,   "build_log.json"),           JSON.stringify(buildLog, null, 2));
+  fs.writeFileSync(path.join(outDir,   "final_build_summary.json"), JSON.stringify(summary,  null, 2));
+  fs.writeFileSync(path.join(s3OutDir, "build_log.json"),           JSON.stringify(buildLog, null, 2));
+
+  console.log("[TEE_BUILD] Completed successfully");
+  console.log(`[TEE_BUILD] Final summary: ${outDir}/final_build_summary.json`);
+  console.log(`[TEE_BUILD] Artifact hash: ${pkgResult.artifact_hash}`);
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });
