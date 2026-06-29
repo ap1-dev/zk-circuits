@@ -1,0 +1,49 @@
+FROM node:22-slim
+
+# Build tools + cmake + OpenSSL headers (required by vcpkg openssl port on Linux)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      curl \
+      ca-certificates \
+      git \
+      zip \
+      unzip \
+      tar \
+      pkg-config \
+      libssl-dev \
+      ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install vcpkg at the same baseline commit used by the app
+ARG VCPKG_COMMIT=5d35de2ee8b13d0bcec328153605638a74fbbf84
+RUN git clone https://github.com/microsoft/vcpkg /opt/vcpkg \
+    && git -C /opt/vcpkg checkout ${VCPKG_COMMIT} \
+    && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics \
+    && ln -s /opt/vcpkg/vcpkg /usr/local/bin/vcpkg
+
+ENV VCPKG_ROOT=/opt/vcpkg
+
+# Pre-install the app's dependencies so the CI build step doesn't need network
+# access. No --triplet flag: vcpkg auto-detects the host triplet (x64-linux
+# when the image is built with --platform linux/amd64, which is required).
+RUN mkdir -p /tmp/vcpkg-prefetch && \
+    printf '{\n\
+  "name": "tee-build-deps",\n\
+  "version": "0.1.0",\n\
+  "dependencies": [\n\
+    { "name": "fmt",           "version>=": "10.2.1" },\n\
+    { "name": "nlohmann-json", "version>=": "3.11.3" },\n\
+    { "name": "openssl",       "version>=": "3.2.1"  },\n\
+    { "name": "catch2",        "version>=": "3.5.2"  }\n\
+  ],\n\
+  "builtin-baseline": "5d35de2ee8b13d0bcec328153605638a74fbbf84"\n\
+}\n' > /tmp/vcpkg-prefetch/vcpkg.json && \
+    vcpkg install \
+      --x-manifest-root=/tmp/vcpkg-prefetch \
+      --x-install-root=/opt/vcpkg-installed \
+    && rm -rf /tmp/vcpkg-prefetch
+
+ENV VCPKG_INSTALLED_DIR=/opt/vcpkg-installed
+
+WORKDIR /work

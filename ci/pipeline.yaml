@@ -167,8 +167,8 @@ jobs:
           image_resource:
             type: registry-image
             source:
-              repository: node
-              tag: 22-slim
+              repository: ((tee_image_repository))
+              tag: latest
 
           inputs:
             - name: circuit-repo
@@ -185,6 +185,8 @@ jobs:
             REPO_DIR: src-repo
             OUT_DIR: tee-build
             S3_OUT_DIR: tee-build/s3-output
+            VCPKG_ROOT: /opt/vcpkg
+            VCPKG_INSTALLED_DIR: /opt/vcpkg-installed
 
           run:
             path: bash

@@ -242,10 +242,11 @@ function phaseBuild(appRoot, buildDir) {
     : "[CONFIGURE_BUILD] VCPKG_ROOT not set; expecting system packages or preconfigured toolchain";
 
   if (process.env.VCPKG_ROOT) {
+    const installedDir = process.env.VCPKG_INSTALLED_DIR || path.join(appRoot, "vcpkg_installed");
     cmakeConfigArgs.push(
       `-DCMAKE_TOOLCHAIN_FILE=${process.env.VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake`,
       `-DVCPKG_MANIFEST_DIR=${appRoot}`,
-      `-DVCPKG_INSTALLED_DIR=${appRoot}/vcpkg_installed`,
+      `-DVCPKG_INSTALLED_DIR=${installedDir}`,
     );
   }
 
