@@ -96,9 +96,6 @@ jobs:
           outputs:
             - name: circuit-artifacts
 
-          params:
-            BUILD_NAME: ((.:build-name))   # flat staging dir; sub-dirs per circuit
-
           run:
             path: bash
             args:
@@ -224,4 +221,4 @@ jobs:
             path: bash
             args:
               - -c
-              - echo "zk-proof task: placeholder — wire proof script here"
+              - 'echo "zk-proof task: placeholder — wire proof script here"'
