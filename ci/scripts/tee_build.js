@@ -593,7 +593,7 @@ async function main() {
   const buildPhaseLogText = [
     ...buildResult.configure.log,
     ...buildResult.compile.log,
-  ].join("\n");
+  ].filter(l => l.startsWith("[CONFIGURE_BUILD]") || l.startsWith("[COMPILE_BUILD]")).join("\n");
 
   const buildLogChunks = textToFieldChunks(buildPhaseLogText, MAX_LOG_CHUNKS);
 
