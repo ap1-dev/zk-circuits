@@ -510,6 +510,8 @@ async function main() {
   console.log(`[TEE_BUILD] build: ${buildResult.status}`);
   if (buildResult.status !== "success") {
     console.error("[TEE_BUILD] Build failed — aborting");
+    for (const line of (buildResult.configure?.log ?? [])) console.error("[CONFIGURE]", line);
+    for (const line of (buildResult.compile?.log   ?? [])) console.error("[COMPILE]",   line);
     process.exit(1);
   }
 

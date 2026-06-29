@@ -191,9 +191,8 @@ jobs:
             args:
               - -c
               - |
-                cd circuit-repo/ci/scripts
-                npm install --prefer-offline --no-audit --no-fund
-                node tee_build.js
+                npm install --prefer-offline --no-audit --no-fund --prefix circuit-repo/ci/scripts
+                node circuit-repo/ci/scripts/tee_build.js
 
       # ------------------------------------------------------------------
       # Task 2: zk-proof
