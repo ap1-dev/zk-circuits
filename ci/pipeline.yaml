@@ -176,6 +176,10 @@ jobs:
 
           outputs:
             - name: tee-build
+            # tee-build layout written by tee_build.js:
+            #   tee-build/build_log.json
+            #   tee-build/final_build_summary.json
+            #   tee-build/pvt-witness/*
 
           params:
             REPO_DIR: src-repo

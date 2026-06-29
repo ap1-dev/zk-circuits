@@ -20,6 +20,8 @@
  *   OUT_DIR/dist/artifact_hash.txt
  *   OUT_DIR/dist/used_deps.json
  *   OUT_DIR/dist/used_deps_root.txt
+ *   OUT_DIR/pvt-witness/f_build_witness.json
+ *   OUT_DIR/pvt-witness/f_test_witness.json
  *   S3_OUT_DIR/build_log.json
  */
 
@@ -28,6 +30,36 @@ const fs            = require("fs");
 const path          = require("path");
 const { spawnSync } = require("child_process");
 const { buildPoseidon } = require("circomlibjs");
+
+// Shared witness parameters — must match MAX_LOG_CHUNKS / CHUNK_SIZE_BYTES in all circuits
+const MAX_LOG_CHUNKS   = 16;
+const CHUNK_SIZE_BYTES = 31;
+
+function textToFieldChunks(text, maxChunks) {
+  const buf    = Buffer.from(text, "utf8");
+  const chunks = [];
+  for (let i = 0; i < buf.length; i += CHUNK_SIZE_BYTES) {
+    const chunk = buf.slice(i, i + CHUNK_SIZE_BYTES);
+    const hex   = chunk.toString("hex") || "00";
+    chunks.push(BigInt("0x" + hex).toString());
+  }
+  if (chunks.length > maxChunks) {
+    throw new Error(
+      `Build log too large: ${chunks.length} chunks, max is ${maxChunks}.`,
+    );
+  }
+  while (chunks.length < maxChunks) chunks.push("0");
+  return chunks;
+}
+
+async function poseidonChainedHash(poseidon, F, chunks, exit1, exit2, exit3) {
+  if (chunks.length < 2) throw new Error("Need at least 2 chunks");
+  let acc = F.toString(poseidon([chunks[0], chunks[1]]));
+  for (let i = 2; i < chunks.length; i++) {
+    acc = F.toString(poseidon([acc, chunks[i]]));
+  }
+  return F.toString(poseidon([acc, exit1, exit2, exit3]));
+}
 
 const FIELD_PRIME = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
@@ -194,6 +226,11 @@ async function phaseComputeSourceRoot(appRoot) {
 function phaseBuild(appRoot, buildDir) {
   const ts = new Date().toISOString();
 
+  // Flags for f_build witness: set true when each stage completes successfully.
+  let stage1_configure_ok = false;
+  let stage2_compile_ok   = false;
+  // stage3 = overall build success (both stages above combined)
+
   // --- Configure ---
   const cmakeConfigArgs = [
     "-S", appRoot,
@@ -223,11 +260,20 @@ function phaseBuild(appRoot, buildDir) {
   configureLog.push(...configureResult.output.split("\n").filter(Boolean));
   configureLog.push(`[CONFIGURE_BUILD] cmake exit_code=${configureResult.exitCode}`);
 
+  if (configureResult.exitCode === 0) {
+    stage1_configure_ok = true;
+    configureLog.push("[CONFIGURE_BUILD] stage1_configure_ok=true");
+  }
+
   if (configureResult.exitCode !== 0) {
+    const stage3_overall_ok = false;
     return {
       stage:     "BUILD",
       status:    "failure",
       exit_code: configureResult.exitCode,
+      stage1_configure_ok,
+      stage2_compile_ok,
+      stage3_overall_ok,
       configure: {
         stage: "CONFIGURE_BUILD", status: "failure",
         exit_code: configureResult.exitCode, cmake_build_type: "Release",
@@ -250,7 +296,14 @@ function phaseBuild(appRoot, buildDir) {
   compileLog.push(...compileResult.output.split("\n").filter(Boolean));
   compileLog.push(`[COMPILE_BUILD] cmake --build exit_code=${compileResult.exitCode}`);
   if (compileResult.exitCode === 0) {
+    stage2_compile_ok = true;
+    compileLog.push("[COMPILE_BUILD] stage2_compile_ok=true");
     compileLog.push(`[COMPILE_BUILD] binary: ${path.join(buildDir, "demo-hasher")}`);
+  }
+
+  const stage3_overall_ok = stage1_configure_ok && stage2_compile_ok;
+  if (stage3_overall_ok) {
+    compileLog.push("[COMPILE_BUILD] stage3_overall_ok=true");
   }
 
   const status = compileResult.exitCode === 0 ? "success" : "failure";
@@ -258,6 +311,9 @@ function phaseBuild(appRoot, buildDir) {
     stage:     "BUILD",
     status,
     exit_code: compileResult.exitCode,
+    stage1_configure_ok,
+    stage2_compile_ok,
+    stage3_overall_ok,
     configure: {
       stage: "CONFIGURE_BUILD", status: "success", exit_code: 0,
       cmake_build_type: "Release", timestamp: ts, log: configureLog,
@@ -526,9 +582,90 @@ async function main() {
   fs.writeFileSync(path.join(outDir,   "final_build_summary.json"), JSON.stringify(summary,  null, 2));
   fs.writeFileSync(path.join(s3OutDir, "build_log.json"),           JSON.stringify(buildLog, null, 2));
 
+  // ------------------------------------------------------------------
+  // Generate f_build private witness
+  // Combines configure + compile log lines into one string, chunks it,
+  // then hashes it using the same chained-Poseidon scheme as the circuit.
+  // ------------------------------------------------------------------
+  const buildPhaseLogText = [
+    ...buildResult.configure.log,
+    ...buildResult.compile.log,
+  ].join("\n");
+
+  const buildLogChunks = textToFieldChunks(buildPhaseLogText, MAX_LOG_CHUNKS);
+
+  const stage1ExitCode = buildResult.stage1_configure_ok ? "0" : "1";
+  const stage2ExitCode = buildResult.stage2_compile_ok   ? "0" : "1";
+  const stage3ExitCode = buildResult.stage3_overall_ok   ? "0" : "1";
+
+  const poseidonForWitness = await buildPoseidon();
+  const buildLogHash = await poseidonChainedHash(
+    poseidonForWitness,
+    poseidonForWitness.F,
+    buildLogChunks,
+    stage1ExitCode,
+    stage2ExitCode,
+    stage3ExitCode,
+  );
+
+  const fBuildWitness = {
+    build_log_chunks:   buildLogChunks,
+    stage_1_exit_code:  stage1ExitCode,
+    stage_2_exit_code:  stage2ExitCode,
+    stage_3_exit_code:  stage3ExitCode,
+    build_log_hash:     buildLogHash,
+  };
+
+  const pvtWitnessDir = path.resolve(outDir, "pvt-witness");
+  fs.mkdirSync(pvtWitnessDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pvtWitnessDir, "f_build_witness.json"),
+    JSON.stringify(fBuildWitness, null, 2),
+  );
+
   console.log("[TEE_BUILD] Completed successfully");
   console.log(`[TEE_BUILD] Final summary: ${outDir}/final_build_summary.json`);
   console.log(`[TEE_BUILD] Artifact hash: ${pkgResult.artifact_hash}`);
+  console.log(`[TEE_BUILD] f_build witness: ${pvtWitnessDir}/f_build_witness.json`);
+  console.log(`[TEE_BUILD] f_build build_log_hash: ${buildLogHash}`);
+
+  // ------------------------------------------------------------------
+  // Generate f_test private witness
+  // Chunks and hashes phase 4 (test) logs. Stage exit codes are fixed
+  // at "0" for now (all tests must pass for the build to reach here).
+  // ------------------------------------------------------------------
+  const testPhaseLogText = testResult.log.join("\n");
+  const testLogChunks    = textToFieldChunks(testPhaseLogText, MAX_LOG_CHUNKS);
+
+  const testStage1ExitCode = "0";
+  const testStage2ExitCode = "0";
+  const testStage3ExitCode = "0";
+
+  const poseidonForTestWitness = await buildPoseidon();
+  const testLogHash = await poseidonChainedHash(
+    poseidonForTestWitness,
+    poseidonForTestWitness.F,
+    testLogChunks,
+    testStage1ExitCode,
+    testStage2ExitCode,
+    testStage3ExitCode,
+  );
+
+  const fTestWitness = {
+    test_log_chunks:   testLogChunks,
+    stage_1_exit_code: testStage1ExitCode,
+    stage_2_exit_code: testStage2ExitCode,
+    stage_3_exit_code: testStage3ExitCode,
+    test_log_hash:     testLogHash,
+  };
+
+  fs.writeFileSync(
+    path.join(pvtWitnessDir, "f_test_witness.json"),
+    JSON.stringify(fTestWitness, null, 2),
+  );
+
+  console.log(`[TEE_BUILD] f_test witness: ${pvtWitnessDir}/f_test_witness.json`);
+  console.log(`[TEE_BUILD] f_test test_log_hash: ${testLogHash}`);
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });
