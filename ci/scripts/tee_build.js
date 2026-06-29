@@ -45,7 +45,7 @@ function textToFieldChunks(text, maxChunks) {
   }
   if (chunks.length > maxChunks) {
     throw new Error(
-      `Build log too large: ${chunks.length} chunks, max is ${maxChunks}.`,
+      `Build/Test log too large: ${chunks.length} chunks, max is ${maxChunks}.`,
     );
   }
   while (chunks.length < maxChunks) chunks.push("0");
@@ -336,7 +336,6 @@ function phaseBuild(appRoot, buildDir) {
 function phaseRunTests(buildDir) {
   const log = [
     "[TEST] Starting tests",
-    "[TEST] Raw text: running CTest",
   ];
 
   const result = run("ctest", ["--test-dir", buildDir, "--output-on-failure"]);
