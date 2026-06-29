@@ -290,7 +290,6 @@ function phaseBuild(appRoot, buildDir) {
   // --- Compile ---
   const compileLog = [
     "[COMPILE_BUILD] Starting compile",
-    "[COMPILE_BUILD] Raw text: compiling C++ files and linking dependencies",
   ];
 
   const compileResult = run("cmake", ["--build", buildDir, "--config", "Release"]);
