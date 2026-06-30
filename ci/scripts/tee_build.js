@@ -20,6 +20,8 @@
  *   OUT_DIR/dist/artifact_hash.txt
  *   OUT_DIR/dist/used_deps.json
  *   OUT_DIR/dist/used_deps_root.txt
+ *   OUT_DIR/pvt-witness/f_source_witness.json
+ *   OUT_DIR/pvt-witness/f_artifact_witness.json
  *   OUT_DIR/pvt-witness/f_build_witness.json
  *   OUT_DIR/pvt-witness/f_test_witness.json
  *   S3_OUT_DIR/build_log.json
@@ -69,6 +71,63 @@ function randomFieldElement() {
     r = BigInt("0x" + crypto.randomBytes(32).toString("hex")) % FIELD_PRIME;
   } while (r === 0n);
   return r;
+}
+
+// Matches encodeToField in register_declared_deps.js exactly.
+function encodeToField(s) {
+  let acc = 0n;
+  for (let i = 0; i < s.length; i++) {
+    acc = acc * 257n + BigInt(s.charCodeAt(i));
+  }
+  return acc % FIELD_PRIME;
+}
+
+// Leaf = Poseidon(encode(name), encode(version)) — matches register_declared_deps.js.
+function depLeaf(poseidon, dep) {
+  return poseidon.F.toObject(poseidon([encodeToField(dep.name), encodeToField(dep.version)]));
+}
+
+// Poseidon over an 8-leaf array in a fixed depth-3 binary tree,
+// matching UsedDepsRoot8() in used_deps_root.circom exactly.
+function computeUsedDepsRoot(poseidon, leaves8) {
+  const F = poseidon.F;
+  const ph = (a, b) => F.toObject(poseidon([a, b]));
+  const level1 = [
+    ph(leaves8[0], leaves8[1]),
+    ph(leaves8[2], leaves8[3]),
+    ph(leaves8[4], leaves8[5]),
+    ph(leaves8[6], leaves8[7]),
+  ];
+  const level2 = [
+    ph(level1[0], level1[1]),
+    ph(level1[2], level1[3]),
+  ];
+  return ph(level2[0], level2[1]);
+}
+
+async function phaseComputeUsedDepsWitness(depsSorted) {
+  const poseidon = await buildPoseidon();
+  const F        = poseidon.F;
+
+  const leafBigInts = depsSorted.map(d => depLeaf(poseidon, d));
+
+  // Pad to 8 with zeros (matches circuit MAX_DEPS = 8).
+  const padded = [...leafBigInts];
+  while (padded.length < 8) padded.push(0n);
+
+  const used_deps_count = depsSorted.length;
+
+  const used_deps_root_poseidon = computeUsedDepsRoot(poseidon, padded);
+  const r2                      = randomFieldElement();
+  const used_deps_commitment    = F.toObject(poseidon([used_deps_root_poseidon, r2])).toString();
+
+  return {
+    used_deps_root_poseidon: used_deps_root_poseidon.toString(),
+    r2:                      r2.toString(),
+    used_deps_commitment,
+    used_deps_count:         used_deps_count.toString(),
+    used_deps:               leafBigInts.map(x => x.toString()),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +557,10 @@ async function main() {
   const depsResult = phaseLoadDeps(distDir);
   console.log(`[TEE_BUILD] load_deps: ${depsResult.status}`);
 
+  const depsWitness = await phaseComputeUsedDepsWitness(depsResult.used_deps);
+  console.log(`[TEE_BUILD] used_deps_root_poseidon=${depsWitness.used_deps_root_poseidon}`);
+  console.log(`[TEE_BUILD] used_deps_commitment=${depsWitness.used_deps_commitment}`);
+
   const sourceResult = await phaseComputeSourceRoot(appRoot);
   console.log(`[TEE_BUILD] compute_source_root: ${sourceResult.status}`);
   console.log(`[TEE_BUILD] used_source_root=${sourceResult.used_source_root}`);
@@ -619,16 +682,45 @@ async function main() {
 
   const pvtWitnessDir = path.resolve(outDir, "pvt-witness");
   fs.mkdirSync(pvtWitnessDir, { recursive: true });
+
+  const fSourceWitness = {
+    used_source_root_poseidon: sourceResult.used_source_root_poseidon,
+    r2:                        sourceResult.r2,
+    used_source_commitment:    sourceResult.used_source_commitment,
+  };
+  fs.writeFileSync(
+    path.join(pvtWitnessDir, "f_source_witness.json"),
+    JSON.stringify(fSourceWitness, null, 2),
+  );
+
+  const fArtifactWitness = {
+    used_artifact_root_poseidon: artifactHashResult.used_artifact_root_poseidon,
+    r2:                          artifactHashResult.r2,
+    used_artifact_commitment:    artifactHashResult.used_artifact_commitment,
+  };
+  fs.writeFileSync(
+    path.join(pvtWitnessDir, "f_artifact_witness.json"),
+    JSON.stringify(fArtifactWitness, null, 2),
+  );
+
   fs.writeFileSync(
     path.join(pvtWitnessDir, "f_build_witness.json"),
     JSON.stringify(fBuildWitness, null, 2),
   );
 
+  fs.writeFileSync(
+    path.join(pvtWitnessDir, "f_deps_witness.json"),
+    JSON.stringify(depsWitness, null, 2),
+  );
+
   console.log("[TEE_BUILD] Completed successfully");
   console.log(`[TEE_BUILD] Final summary: ${outDir}/final_build_summary.json`);
   console.log(`[TEE_BUILD] Artifact hash: ${pkgResult.artifact_hash}`);
+  console.log(`[TEE_BUILD] f_source witness: ${pvtWitnessDir}/f_source_witness.json`);
+  console.log(`[TEE_BUILD] f_artifact witness: ${pvtWitnessDir}/f_artifact_witness.json`);
   console.log(`[TEE_BUILD] f_build witness: ${pvtWitnessDir}/f_build_witness.json`);
   console.log(`[TEE_BUILD] f_build build_log_hash: ${buildLogHash}`);
+  console.log(`[TEE_BUILD] f_deps witness: ${pvtWitnessDir}/f_deps_witness.json`);
 
   // ------------------------------------------------------------------
   // Generate f_test private witness
