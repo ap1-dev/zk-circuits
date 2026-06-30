@@ -316,7 +316,7 @@ function phaseBuild(appRoot, buildDir) {
     vcpkgLog,
   ];
 
-  const configureResult = run("cmake", cmakeConfigArgs);
+  const configureResult = run("cmake", cmakeConfigArgs, { env: { ...process.env, SOURCE_DATE_EPOCH: "0" } });
   configureLog.push(...configureResult.output.split("\n").filter(Boolean));
   configureLog.push(`[CONFIGURE_BUILD] cmake exit_code=${configureResult.exitCode}`);
 
@@ -351,7 +351,7 @@ function phaseBuild(appRoot, buildDir) {
     "[COMPILE_BUILD] Starting compile",
   ];
 
-  const compileResult = run("cmake", ["--build", buildDir, "--config", "Release"]);
+  const compileResult = run("cmake", ["--build", buildDir, "--config", "Release"], { env: { ...process.env, SOURCE_DATE_EPOCH: "0" } });
   compileLog.push(...compileResult.output.split("\n").filter(Boolean));
   compileLog.push(`[COMPILE_BUILD] cmake --build exit_code=${compileResult.exitCode}`);
   if (compileResult.exitCode === 0) {
