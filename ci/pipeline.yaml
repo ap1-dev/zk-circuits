@@ -73,6 +73,13 @@ resources:
       <<: *s3_source
       regexp: circuits/f_deps_membership/f_deps_membership-artifacts-([0-9]+).tgz
 
+  - name: zk-proofs
+    type: s3
+    icon: shield-lock
+    source:
+      <<: *s3_source
+      regexp: zk-proofs/zk-proofs-([0-9]+).tgz
+
 
 jobs:
   - name: compile-circuits
@@ -212,6 +219,7 @@ jobs:
 
           inputs:
             - name: circuit-repo
+            - name: src-repo
             - name: tee-build
             - name: artifacts-f-source
             - name: artifacts-f-artifact
@@ -227,4 +235,9 @@ jobs:
             args:
               - -c
               - |
+                npm install --prefer-offline --no-audit --no-fund --prefix circuit-repo/ci/scripts
                 node circuit-repo/ci/scripts/zk-proof.js
+
+      - put: zk-proofs
+        params:
+          file: zk-proofs/zk-proofs-*.tgz
