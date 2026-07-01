@@ -338,6 +338,10 @@ async function generateProofs() {
 
   console.log("\n=== zk-proof.js: all proofs generated and bundled ===");
   console.log(`Bundle: ${bundlePath}`);
+
+  // snarkjs spawns ffjavascript worker threads that never self-terminate;
+  // without this the Node process hangs and Concourse never sees task exit.
+  process.exit(0);
 }
 
 generateProofs().catch((err) => { console.error(err); process.exit(1); });
