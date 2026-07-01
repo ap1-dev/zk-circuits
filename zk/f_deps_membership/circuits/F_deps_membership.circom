@@ -107,4 +107,4 @@ template FDepsMembership(APPROVED_TREE_DEPTH) {
     usedRootComputer.root === used_deps_root;
 }
 
-component main { public [approved_deps_commitment, used_deps_commitment] } = FDepsMembership(4);
+component main { public [approved_deps_commitment, used_deps_commitment] } = FDepsMembership(3);

@@ -226,4 +226,5 @@ jobs:
             path: bash
             args:
               - -c
-              - 'echo "zk-proof task: placeholder — wire proof script here"'
+              - |
+                node circuit-repo/ci/scripts/zk-proof.js
