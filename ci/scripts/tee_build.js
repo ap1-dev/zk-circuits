@@ -10,7 +10,7 @@
  * Inputs (env-overridable):
  *   REPO_DIR    root of the source checkout (must contain app/)  (default: "repo")
  *   OUT_DIR     output volume for build artifacts                 (default: "tee-build")
- *   S3_OUT_DIR  directory to write the build_log for S3 upload   (default: "s3-output")
+ *   S3_OUT_DIR  directory to write S3-bound outputs               (default: "s3-output")
  *   VCPKG_ROOT  optional — enables vcpkg toolchain flags to cmake
  *
  * Outputs:
@@ -24,7 +24,10 @@
  *   OUT_DIR/pvt-witness/f_artifact_witness.json
  *   OUT_DIR/pvt-witness/f_build_witness.json
  *   OUT_DIR/pvt-witness/f_test_witness.json
- *   S3_OUT_DIR/build_log.json
+ *   S3_OUT_DIR/build/tee_report.json
+ *   S3_OUT_DIR/build/build_log.json
+ *   S3_OUT_DIR/build/final_build_summary.json
+ *   S3_OUT_DIR/dist/demo-hasher-linux-x64.tar.gz
  */
 
 const crypto        = require("crypto");
@@ -539,13 +542,16 @@ async function main() {
   const outDir   = process.env.OUT_DIR    || "tee-build";
   const s3OutDir = process.env.S3_OUT_DIR || "s3-output";
 
+  const s3BuildDir = path.resolve(s3OutDir, "build");
+  const s3DistDir  = path.resolve(s3OutDir, "dist");
+
   // appRoot = <src-repo>/app — mirrors APP_ROOT in common.sh
   const appRoot  = path.resolve(repoDir, "app");
   // Build and dist dirs live inside the output volume (src-repo input is read-only)
   const buildDir = path.resolve(outDir, "build");
   const distDir  = path.resolve(outDir, "dist");
 
-  for (const d of [outDir, s3OutDir, buildDir, distDir]) {
+  for (const d of [outDir, s3BuildDir, s3DistDir, buildDir, distDir]) {
     fs.mkdirSync(d, { recursive: true });
   }
 
@@ -642,9 +648,10 @@ async function main() {
     },
   };
 
-  fs.writeFileSync(path.join(outDir,   "build_log.json"),           JSON.stringify(buildLog, null, 2));
-  fs.writeFileSync(path.join(outDir,   "final_build_summary.json"), JSON.stringify(summary,  null, 2));
-  fs.writeFileSync(path.join(s3OutDir, "build_log.json"),           JSON.stringify(buildLog, null, 2));
+  fs.writeFileSync(path.join(outDir,    "build_log.json"),           JSON.stringify(buildLog, null, 2));
+  fs.writeFileSync(path.join(outDir,    "final_build_summary.json"), JSON.stringify(summary,  null, 2));
+  fs.writeFileSync(path.join(s3BuildDir, "build_log.json"),           JSON.stringify(buildLog, null, 2));
+  fs.writeFileSync(path.join(s3BuildDir, "final_build_summary.json"), JSON.stringify(summary,  null, 2));
 
   // ------------------------------------------------------------------
   // Generate f_build private witness
@@ -759,6 +766,41 @@ async function main() {
 
   console.log(`[TEE_BUILD] f_test witness: ${pvtWitnessDir}/f_test_witness.json`);
   console.log(`[TEE_BUILD] f_test test_log_hash: ${testLogHash}`);
+
+  // ------------------------------------------------------------------
+  // Generate tee_report
+  // report_data = sha256(used_source_commitment|used_deps_commitment|
+  //                      buildLogHash|testLogHash|used_artifact_commitment)
+  // ------------------------------------------------------------------
+  const reportData = H(
+    sourceResult.used_source_commitment,
+    depsWitness.used_deps_commitment,
+    buildLogHash,
+    testLogHash,
+    artifactHashResult.used_artifact_commitment,
+  );
+
+  const teeReport = {
+    measurement:       "sha256:bca64153c63d6547f333fe5147e1843f1eccf155ae069a3487aade436b5ae03a",
+    report_data:       "sha256:" + reportData,
+    nonce:             "dummy-nonce",
+    signature:         "dummy-signature",
+    certificate_chain: ["dummy-certificate"],
+  };
+
+  fs.writeFileSync(
+    path.join(s3BuildDir, "tee_report.json"),
+    JSON.stringify(teeReport, null, 2),
+  );
+  console.log(`[TEE_BUILD] tee_report written: ${s3BuildDir}/tee_report.json`);
+  console.log(`[TEE_BUILD] tee_report.report_data=${teeReport.report_data}`);
+
+  // Copy the artifact tarball into the s3-output dist dir for S3 upload
+  const artifactName    = "demo-hasher-linux-x64.tar.gz";
+  const artifactSrcPath = path.join(distDir, artifactName);
+  const artifactDstPath = path.join(s3DistDir, artifactName);
+  fs.copyFileSync(artifactSrcPath, artifactDstPath);
+  console.log(`[TEE_BUILD] artifact staged for S3: ${artifactDstPath}`);
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });

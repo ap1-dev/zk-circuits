@@ -7,7 +7,7 @@
  * Concourse task: zk-proof
  *
  * Inputs (relative to Concourse workspace root = process.cwd()):
- *   circuit-repo/                — git checkout (this script lives here)
+ *   cicd-repo/                — git checkout (this script lives here)
  *   tee-build/pvt-witness/       — private witnesses from build-tee task
  *   src-repo/policy_register/    — declared (policy) commitments
  *   artifacts-f-source/          — compiled f_source .tgz

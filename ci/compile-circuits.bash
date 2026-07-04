@@ -7,7 +7,7 @@ BUILD_NAME=${BUILD_NAME:-$(date +%s)}
 #   repo/            — git checkout (circom sources + shared ptau keys)
 #   circuit-artifacts/ — output directory for per-circuit bundles
 
-REPO=circuit-repo/zk
+REPO=cicd-repo/zk
 KEYS=$REPO/ptau_keys
 OUT=circuit-artifacts
 
