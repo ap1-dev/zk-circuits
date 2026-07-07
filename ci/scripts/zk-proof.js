@@ -183,9 +183,9 @@ const fSourceInput = {
 // --- f_artifact -------------------------------------------------------------
 const fArtifactInput = {
   declared_commitment:    declArtifact.declared_artifact_commitment,
-  used_commitment:        fArtifactPvt.used_artifact_commitment,
+  used_commitment:        fArtifactPvt.built_artifact_commitment,
   declared_artifact_hash: declArtifact.declared_artifact_root_poseidon,
-  used_artifact_hash:     fArtifactPvt.used_artifact_root_poseidon,
+  built_artifact_hash:     fArtifactPvt.built_artifact_root_poseidon,
   r1:                     declArtifact.r1,
   r2:                     fArtifactPvt.r2,
 };

@@ -510,25 +510,25 @@ async function phaseComputeArtifactHash(artifactHash) {
   const poseidon = await buildPoseidon();
   const F        = poseidon.F;
 
-  const used_artifact_root_poseidon = BigInt("0x" + artifactHash) % FIELD_PRIME;
+  const built_artifact_root_poseidon = BigInt("0x" + artifactHash) % FIELD_PRIME;
   const r2                          = randomFieldElement();
-  const used_artifact_commitment    = F.toString(poseidon([used_artifact_root_poseidon, r2]));
+  const built_artifact_commitment    = F.toString(poseidon([built_artifact_root_poseidon, r2]));
 
   return {
     stage:                       "COMPUTE_ARTIFACT_HASH",
     status:                      "success",
     exit_code:                   0,
     timestamp:                   new Date().toISOString(),
-    used_artifact_root:          artifactHash,
-    used_artifact_root_poseidon: used_artifact_root_poseidon.toString(),
+    built_artifact_root:          artifactHash,
+    built_artifact_root_poseidon: built_artifact_root_poseidon.toString(),
     r2:                          r2.toString(),
-    used_artifact_commitment,
+    built_artifact_commitment,
     log: [
       "[ARTIFACT_HASH] Computing Poseidon commitment over artifact hash",
-      `[ARTIFACT_HASH] used_artifact_root=${artifactHash}`,
-      `[ARTIFACT_HASH] used_artifact_root_poseidon=${used_artifact_root_poseidon}`,
+      `[ARTIFACT_HASH] built_artifact_root=${artifactHash}`,
+      `[ARTIFACT_HASH] built_artifact_root_poseidon=${built_artifact_root_poseidon}`,
       `[ARTIFACT_HASH] r2=${r2}`,
-      `[ARTIFACT_HASH] used_artifact_commitment=${used_artifact_commitment}`,
+      `[ARTIFACT_HASH] built_artifact_commitment=${built_artifact_commitment}`,
     ],
   };
 }
@@ -596,10 +596,10 @@ async function main() {
 
   const artifactHashResult = await phaseComputeArtifactHash(pkgResult.artifact_hash);
   console.log(`[TEE_BUILD] compute_artifact_hash: ${artifactHashResult.status}`);
-  console.log(`[TEE_BUILD] used_artifact_root=${artifactHashResult.used_artifact_root}`);
-  console.log(`[TEE_BUILD] used_artifact_root_poseidon=${artifactHashResult.used_artifact_root_poseidon}`);
+  console.log(`[TEE_BUILD] built_artifact_root=${artifactHashResult.built_artifact_root}`);
+  console.log(`[TEE_BUILD] built_artifact_root_poseidon=${artifactHashResult.built_artifact_root_poseidon}`);
   console.log(`[TEE_BUILD] r2=${artifactHashResult.r2}`);
-  console.log(`[TEE_BUILD] used_artifact_commitment=${artifactHashResult.used_artifact_commitment}`);
+  console.log(`[TEE_BUILD] built_artifact_commitment=${artifactHashResult.built_artifact_commitment}`);
 
   const buildLog = {
     build_id:     "tee-build-001",
@@ -644,7 +644,7 @@ async function main() {
       used_source_root: sourceResult.used_source_root,
     },
     artifact_measurement: {
-      used_artifact_root: artifactHashResult.used_artifact_root,
+      built_artifact_root: artifactHashResult.built_artifact_root,
     },
   };
 
@@ -701,9 +701,9 @@ async function main() {
   );
 
   const fArtifactWitness = {
-    used_artifact_root_poseidon: artifactHashResult.used_artifact_root_poseidon,
+    built_artifact_root_poseidon: artifactHashResult.built_artifact_root_poseidon,
     r2:                          artifactHashResult.r2,
-    used_artifact_commitment:    artifactHashResult.used_artifact_commitment,
+    built_artifact_commitment:    artifactHashResult.built_artifact_commitment,
   };
   fs.writeFileSync(
     path.join(pvtWitnessDir, "f_artifact_witness.json"),
@@ -770,14 +770,14 @@ async function main() {
   // ------------------------------------------------------------------
   // Generate tee_report
   // report_data = sha256(used_source_commitment|used_deps_commitment|
-  //                      buildLogHash|testLogHash|used_artifact_commitment)
+  //                      buildLogHash|testLogHash|built_artifact_commitment)
   // ------------------------------------------------------------------
   const reportData = H(
     sourceResult.used_source_commitment,
     depsWitness.used_deps_commitment,
     buildLogHash,
     testLogHash,
-    artifactHashResult.used_artifact_commitment,
+    artifactHashResult.built_artifact_commitment,
   );
 
   const teeReport = {

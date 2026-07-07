@@ -9,7 +9,7 @@ template FArtifact() {
 
     // Private witnesses
     signal input declared_artifact_hash;
-    signal input used_artifact_hash;
+    signal input built_artifact_hash;
     signal input r1;
     signal input r2;
 
@@ -18,9 +18,9 @@ template FArtifact() {
     declaredHasher.inputs[0] <== declared_artifact_hash;
     declaredHasher.inputs[1] <== r1;
 
-    // Commit(used_artifact_hash, r2)
+    // Commit(built_artifact_hash, r2)
     component usedHasher = Poseidon(2);
-    usedHasher.inputs[0] <== used_artifact_hash;
+    usedHasher.inputs[0] <== built_artifact_hash;
     usedHasher.inputs[1] <== r2;
 
     // Check commitment openings
@@ -28,7 +28,7 @@ template FArtifact() {
     usedHasher.out === used_commitment;
 
     // Core equality constraint
-    declared_artifact_hash === used_artifact_hash;
+    declared_artifact_hash === built_artifact_hash;
 }
 
 component main { public [declared_commitment, used_commitment] } = FArtifact();
