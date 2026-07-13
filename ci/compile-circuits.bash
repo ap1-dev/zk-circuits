@@ -2,6 +2,7 @@
 set -euo pipefail
 
 BUILD_NAME=${BUILD_NAME:-$(date +%s)}
+COMPILE_START=$(date +%s)
 
 # Inputs (set by Concourse task environment):
 #   repo/            — git checkout (circom sources + shared ptau keys)
@@ -85,6 +86,11 @@ compile_circuit f_build           f_build           pot14_final.ptau
 compile_circuit f_test            f_test            pot14_final.ptau
 compile_circuit f_deps_membership F_deps_membership pot16_final.ptau
 
+COMPILE_END=$(date +%s)
+COMPILE_ELAPSED=$(( COMPILE_END - COMPILE_START ))
+
 echo ""
 echo "All circuits compiled. Artifact bundles:"
 find "$OUT" -name "*.tgz" | sort
+echo ""
+echo "[compile-circuits] Circuit compilation time: ${COMPILE_ELAPSED}s"

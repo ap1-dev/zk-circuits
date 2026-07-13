@@ -339,9 +339,14 @@ async function generateProofs() {
   console.log("\n=== zk-proof.js: all proofs generated and bundled ===");
   console.log(`Bundle: ${bundlePath}`);
 
+  const zkProofElapsed = ((Date.now() - ZK_PROOF_START) / 1000).toFixed(2);
+  console.log(`[ZK_PROOF] zk-proof.js build time: ${zkProofElapsed}s`);
+
   // snarkjs spawns ffjavascript worker threads that never self-terminate;
   // without this the Node process hangs and Concourse never sees task exit.
   process.exit(0);
 }
+
+const ZK_PROOF_START = Date.now();
 
 generateProofs().catch((err) => { console.error(err); process.exit(1); });

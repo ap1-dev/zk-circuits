@@ -803,4 +803,10 @@ async function main() {
   console.log(`[TEE_BUILD] artifact staged for S3: ${artifactDstPath}`);
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+const TEE_BUILD_START = Date.now();
+main()
+  .then(() => {
+    const elapsed = ((Date.now() - TEE_BUILD_START) / 1000).toFixed(2);
+    console.log(`[TEE_BUILD] tee_build.js build time: ${elapsed}s`);
+  })
+  .catch((err) => { console.error(err); process.exit(1); });
