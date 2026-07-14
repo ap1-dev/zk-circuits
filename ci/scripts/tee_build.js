@@ -303,6 +303,8 @@ function phaseBuild(appRoot, buildDir) {
     ? `[CONFIGURE_BUILD] VCPKG_ROOT detected: ${process.env.VCPKG_ROOT}`
     : "[CONFIGURE_BUILD] VCPKG_ROOT not set; expecting system packages or preconfigured toolchain";
 
+  let vcpkg_fetch_ms = 0;
+
   if (process.env.VCPKG_ROOT) {
     const installedDir = process.env.VCPKG_INSTALLED_DIR || path.join(appRoot, "vcpkg_installed");
     cmakeConfigArgs.push(
@@ -310,6 +312,16 @@ function phaseBuild(appRoot, buildDir) {
       `-DVCPKG_MANIFEST_DIR=${appRoot}`,
       `-DVCPKG_INSTALLED_DIR=${installedDir}`,
     );
+
+    // Run vcpkg install explicitly and time it so the caller can subtract
+    // the registry fetch (network I/O) from the pure build time.
+    const vcpkgStart = Date.now();
+    run(
+      `${process.env.VCPKG_ROOT}/vcpkg`,
+      ["install", `--x-manifest-root=${appRoot}`, `--x-install-root=${installedDir}`],
+      { env: process.env },
+    );
+    vcpkg_fetch_ms = Date.now() - vcpkgStart;
   }
 
   const configureLog = [
@@ -337,6 +349,7 @@ function phaseBuild(appRoot, buildDir) {
       stage1_configure_ok,
       stage2_compile_ok,
       stage3_overall_ok,
+      vcpkg_fetch_ms,
       configure: {
         stage: "CONFIGURE_BUILD", status: "failure",
         exit_code: configureResult.exitCode, cmake_build_type: "Release",
@@ -376,6 +389,7 @@ function phaseBuild(appRoot, buildDir) {
     stage1_configure_ok,
     stage2_compile_ok,
     stage3_overall_ok,
+    vcpkg_fetch_ms,
     configure: {
       stage: "CONFIGURE_BUILD", status: "success", exit_code: 0,
       cmake_build_type: "Release", timestamp: ts, log: configureLog,
@@ -586,7 +600,9 @@ async function main() {
   console.log(`[TEE_BUILD] package_artifact: ${pkgResult.status}`);
   console.log(`[TEE_BUILD] artifact_hash=${pkgResult.artifact_hash}`);
 
-  const PURE_BUILD_ELAPSED = ((Date.now() - PURE_BUILD_START) / 1000).toFixed(2);
+  const PURE_BUILD_ELAPSED_RAW = Date.now() - PURE_BUILD_START;
+  const PURE_BUILD_ELAPSED = ((PURE_BUILD_ELAPSED_RAW - buildResult.vcpkg_fetch_ms) / 1000).toFixed(2);
+  const VCPKG_FETCH_ELAPSED = (buildResult.vcpkg_fetch_ms / 1000).toFixed(2);
 
   // ── ZK overhead phases (Poseidon hashing + witness generation) ───────────
   const ZK_OVERHEAD_START = Date.now();
@@ -815,9 +831,10 @@ async function main() {
 
   console.log("");
   console.log("[TEE_BUILD] --- Time Measurements ---");
-  console.log(`[TEE_BUILD] Pure build time (configure+compile+test+package): ${PURE_BUILD_ELAPSED}s`);
-  console.log(`[TEE_BUILD] ZK overhead (Poseidon hashing + witness generation): ${ZK_OVERHEAD_ELAPSED}s`);
-  console.log(`[TEE_BUILD] Total tee_build.js time: ${TOTAL_ELAPSED}s`);
+  console.log(`[TEE_BUILD] vcpkg registry fetch time (excluded):              ${VCPKG_FETCH_ELAPSED}s`);
+  console.log(`[TEE_BUILD] Pure build time (configure+compile+test+package):  ${PURE_BUILD_ELAPSED}s`);
+  console.log(`[TEE_BUILD] ZK overhead (Poseidon hashing + witness gen):      ${ZK_OVERHEAD_ELAPSED}s`);
+  console.log(`[TEE_BUILD] Total tee_build.js time:                           ${TOTAL_ELAPSED}s`);
 }
 
 const TEE_BUILD_START = Date.now();
