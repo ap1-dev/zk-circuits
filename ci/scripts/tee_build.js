@@ -560,19 +560,11 @@ async function main() {
   console.log(`[TEE_BUILD] build dir: ${buildDir}`);
   console.log(`[TEE_BUILD] dist dir:  ${distDir}`);
 
+  // ── Pure build phases (equivalent to vanilla build) ──────────────────────
+  const PURE_BUILD_START = Date.now();
+
   const depsResult = phaseLoadDeps(distDir);
   console.log(`[TEE_BUILD] load_deps: ${depsResult.status}`);
-
-  const depsWitness = await phaseComputeUsedDepsWitness(depsResult.used_deps);
-  console.log(`[TEE_BUILD] used_deps_root_poseidon=${depsWitness.used_deps_root_poseidon}`);
-  console.log(`[TEE_BUILD] used_deps_commitment=${depsWitness.used_deps_commitment}`);
-
-  const sourceResult = await phaseComputeSourceRoot(appRoot);
-  console.log(`[TEE_BUILD] compute_source_root: ${sourceResult.status}`);
-  console.log(`[TEE_BUILD] used_source_root=${sourceResult.used_source_root}`);
-  console.log(`[TEE_BUILD] used_source_root_poseidon=${sourceResult.used_source_root_poseidon}`);
-  console.log(`[TEE_BUILD] r2=${sourceResult.r2}`);
-  console.log(`[TEE_BUILD] used_source_commitment=${sourceResult.used_source_commitment}`);
 
   const buildResult = phaseBuild(appRoot, buildDir);
   console.log(`[TEE_BUILD] build: ${buildResult.status}`);
@@ -593,6 +585,22 @@ async function main() {
   const pkgResult = phasePackageArtifact(buildDir, distDir, depsResult.used_deps_root);
   console.log(`[TEE_BUILD] package_artifact: ${pkgResult.status}`);
   console.log(`[TEE_BUILD] artifact_hash=${pkgResult.artifact_hash}`);
+
+  const PURE_BUILD_ELAPSED = ((Date.now() - PURE_BUILD_START) / 1000).toFixed(2);
+
+  // ── ZK overhead phases (Poseidon hashing + witness generation) ───────────
+  const ZK_OVERHEAD_START = Date.now();
+
+  const depsWitness = await phaseComputeUsedDepsWitness(depsResult.used_deps);
+  console.log(`[TEE_BUILD] used_deps_root_poseidon=${depsWitness.used_deps_root_poseidon}`);
+  console.log(`[TEE_BUILD] used_deps_commitment=${depsWitness.used_deps_commitment}`);
+
+  const sourceResult = await phaseComputeSourceRoot(appRoot);
+  console.log(`[TEE_BUILD] compute_source_root: ${sourceResult.status}`);
+  console.log(`[TEE_BUILD] used_source_root=${sourceResult.used_source_root}`);
+  console.log(`[TEE_BUILD] used_source_root_poseidon=${sourceResult.used_source_root_poseidon}`);
+  console.log(`[TEE_BUILD] r2=${sourceResult.r2}`);
+  console.log(`[TEE_BUILD] used_source_commitment=${sourceResult.used_source_commitment}`);
 
   const artifactHashResult = await phaseComputeArtifactHash(pkgResult.artifact_hash);
   console.log(`[TEE_BUILD] compute_artifact_hash: ${artifactHashResult.status}`);
@@ -801,12 +809,16 @@ async function main() {
   const artifactDstPath = path.join(s3DistDir, artifactName);
   fs.copyFileSync(artifactSrcPath, artifactDstPath);
   console.log(`[TEE_BUILD] artifact staged for S3: ${artifactDstPath}`);
+
+  const ZK_OVERHEAD_ELAPSED = ((Date.now() - ZK_OVERHEAD_START) / 1000).toFixed(2);
+  const TOTAL_ELAPSED = ((Date.now() - TEE_BUILD_START) / 1000).toFixed(2);
+
+  console.log("");
+  console.log("[TEE_BUILD] --- Time Measurements ---");
+  console.log(`[TEE_BUILD] Pure build time (configure+compile+test+package): ${PURE_BUILD_ELAPSED}s`);
+  console.log(`[TEE_BUILD] ZK overhead (Poseidon hashing + witness generation): ${ZK_OVERHEAD_ELAPSED}s`);
+  console.log(`[TEE_BUILD] Total tee_build.js time: ${TOTAL_ELAPSED}s`);
 }
 
 const TEE_BUILD_START = Date.now();
-main()
-  .then(() => {
-    const elapsed = ((Date.now() - TEE_BUILD_START) / 1000).toFixed(2);
-    console.log(`[TEE_BUILD] tee_build.js build time: ${elapsed}s`);
-  })
-  .catch((err) => { console.error(err); process.exit(1); });
+main().catch((err) => { console.error(err); process.exit(1); });
