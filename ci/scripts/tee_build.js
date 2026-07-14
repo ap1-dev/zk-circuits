@@ -239,7 +239,8 @@ const SOURCE_EXCLUDED_DIRS = new Set([
   "build", "dist", "logs", "vcpkg_installed", ".vcpkg", "commitments", "policy_register",
 ]);
 
-async function phaseComputeSourceRoot(appRoot) {
+// Part A — pure build work: file walk + SHA256 + Merkle root (no Poseidon)
+function phaseComputeSourceMerkleRoot(appRoot) {
   if (!fs.existsSync(appRoot)) {
     throw new Error(`tee_build: app source dir not found: ${appRoot}`);
   }
@@ -255,6 +256,11 @@ async function phaseComputeSourceRoot(appRoot) {
   const leaves         = entries.map(([rel, fh]) => H(rel, fh));
   const usedSourceRoot = merkleRoot(leaves, { sort: false });
 
+  return { usedSourceRoot, filesHashed: entries.length };
+}
+
+// Part B — ZK overhead: Poseidon commitment over the Merkle root
+async function phaseComputeSourceCommitment(usedSourceRoot, filesHashed) {
   const poseidon = await buildPoseidon();
   const F        = poseidon.F;
   const used_source_root_poseidon = BigInt("0x" + usedSourceRoot) % FIELD_PRIME;
@@ -270,10 +276,10 @@ async function phaseComputeSourceRoot(appRoot) {
     used_source_root_poseidon: used_source_root_poseidon.toString(),
     r2:                        r2.toString(),
     used_source_commitment,
-    source_files_hashed:       entries.length,
+    source_files_hashed:       filesHashed,
     log: [
       "[SOURCE_ROOT] Computing Merkle root over app/ source tree",
-      `[SOURCE_ROOT] ${entries.length} files hashed`,
+      `[SOURCE_ROOT] ${filesHashed} files hashed`,
       `[SOURCE_ROOT] used_source_root=${usedSourceRoot}`,
       `[SOURCE_ROOT] used_source_root_poseidon=${used_source_root_poseidon}`,
       `[SOURCE_ROOT] used_source_commitment=${used_source_commitment}`,
@@ -580,6 +586,9 @@ async function main() {
   const depsResult = phaseLoadDeps(distDir);
   console.log(`[TEE_BUILD] load_deps: ${depsResult.status}`);
 
+  const { usedSourceRoot, filesHashed } = phaseComputeSourceMerkleRoot(appRoot);
+  console.log(`[TEE_BUILD] compute_source_merkle_root: ${filesHashed} files hashed, root=${usedSourceRoot}`);
+
   const buildResult = phaseBuild(appRoot, buildDir);
   console.log(`[TEE_BUILD] build: ${buildResult.status}`);
   if (buildResult.status !== "success") {
@@ -611,7 +620,7 @@ async function main() {
   console.log(`[TEE_BUILD] used_deps_root_poseidon=${depsWitness.used_deps_root_poseidon}`);
   console.log(`[TEE_BUILD] used_deps_commitment=${depsWitness.used_deps_commitment}`);
 
-  const sourceResult = await phaseComputeSourceRoot(appRoot);
+  const sourceResult = await phaseComputeSourceCommitment(usedSourceRoot, filesHashed);
   console.log(`[TEE_BUILD] compute_source_root: ${sourceResult.status}`);
   console.log(`[TEE_BUILD] used_source_root=${sourceResult.used_source_root}`);
   console.log(`[TEE_BUILD] used_source_root_poseidon=${sourceResult.used_source_root_poseidon}`);
